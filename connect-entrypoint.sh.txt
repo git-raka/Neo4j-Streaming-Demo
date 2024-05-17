@@ -1,0 +1,64 @@
+#!/bin/bash
+
+echo "Installing connector plugins"
+confluent-hub install --no-prompt neo4j/kafka-connect-neo4j:5.0.0
+confluent-hub install --no-prompt confluentinc/kafka-connect-datagen:0.3.2
+confluent-hub install --no-prompt debezium/debezium-connector-postgresql:latest
+
+# Start Connect service
+/etc/confluent/docker/run &
+
+# Wait for Kafka Connect to be ready
+until curl -s -o /dev/null -w "%{http_code}" http://localhost:8083/connectors | grep -q "200"; do
+    echo "Waiting for Kafka Connect..."
+    sleep 5
+done
+
+# Execute the curl command to create the connector
+curl -H 'Content-Type: application/json' connect:8083/connectors --data '
+{
+    "name": "postgresql-to-kafka",
+    "config": {
+        "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+        "tasks.max": "1",
+        "plugin.name": "pgoutput",
+        "database.hostname": "postgres",
+        "database.port": "5432",
+        "database.user": "postgres",
+        "database.password": "postgres",
+        "database.dbname": "postgres",
+        "database.server.name": "postgres",
+        "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+        "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+        "key.converter.schemas.enable": "false",
+        "value.converter.schemas.enable": "false",
+        "snapshot.mode": "always",
+        "topic.prefix": "demo"
+    }
+}'
+
+curl -H 'Content-Type: application/json' connect:8083/connectors --data '
+{
+  "name": "stream-neo4j-demo",
+  "config": {
+        "topics": "demo.public.customers",
+        "connector.class": "streams.kafka.connect.sink.Neo4jSinkConnector",
+        "key.converter": "org.apache.kafka.connect.storage.StringConverter",
+        "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+        "errors.retry.timeout": "-1",
+        "errors.retry.delay.max.ms": "1000",
+        "errors.tolerance": "all",
+        "errors.log.enable": true,
+        "errors.log.include.messages": true,
+        "neo4j.server.uri": "bolt://neo4j:7687",
+        "neo4j.authentication.basic.username": "neo4j",
+        "neo4j.authentication.basic.password": "password",
+        "neo4j.batch.parallelize": "false",
+        "neo4j.database": "neo4j",
+        "neo4j.encryption.enabled": "false",
+		"value.converter.schemas.enable":"false",
+		"neo4j.topic.cypher.demo.public.customers": "WITH event CALL { WITH event WITH event WHERE event.op IN [\"c\",\"u\",\"r\"] WITH event[\"after\"] AS cust MERGE (c:Customer {CustomerID:toInteger(cust.customerid)}) ON CREATE SET c.CustomerName = cust.customername,c.ContactName = cust.contactname,c.Address = cust.address,c.City = cust.city,c.PostalCode = cust.postalcode,c.Country = cust.country ON MATCH SET c.CustomerName = cust.customername,c.ContactName = cust.contactname,c.Address = cust.address,c.City = cust.city,c.PostalCode = cust.postalcode,c.Country = cust.country UNION WITH event WITH event WHERE event.op IN [\"d\"] WITH event[\"before\"] AS cust MATCH (c1:Customer {CustomerID:cust.customerid}) DELETE c1}"
+  }
+}'
+# Keep the container running
+wait
